@@ -13,6 +13,9 @@
 #include "game_state.h"
 
 static GameState gs;
+static int       g_snapshot_fd = -1;
+
+void game_logic_set_snapshot_fd(int fd) { g_snapshot_fd = fd; }
 
 /* ── Envío de respuesta al server via FIFO ───────────────────── */
 /*
@@ -71,6 +74,10 @@ static void send_error(int fd_out, int pid, const char *msg) {
 
 static void send_state(int fd_out, int pid, const char *action, const char *card) {
     send_response(fd_out, true, pid, action, card, NULL, true, -1, NULL);
+    if (g_snapshot_fd >= 0) {
+        ssize_t _w = write(g_snapshot_fd, &gs, sizeof(GameState));
+        (void)_w;
+    }
 }
 
 /* ── Helpers internos ────────────────────────────────────────── */
@@ -495,7 +502,22 @@ void game_logic_loop(void) {
     if (fd_in < 0 || fd_out < 0) { perror("game_logic: open FIFOs"); _exit(1); }
 
     gs_init(&gs);
-    printf("[game_logic pid=%d] Motor iniciado. Esperando jugadores...\n", getpid());
+
+    bool restored = false;
+    int snap_fd = open("/tmp/ek_snapshot.bin", O_RDONLY);
+    if (snap_fd >= 0) {
+        ssize_t n = read(snap_fd, &gs, sizeof(GameState));
+        close(snap_fd);
+        if (n == (ssize_t)sizeof(GameState)) {
+            restored = true;
+            unlink("/tmp/ek_snapshot.bin");
+        } else {
+            gs_init(&gs);
+        }
+    }
+
+    printf("[game_logic pid=%d] Motor iniciado. %s\n", getpid(),
+           restored ? "Partida restaurada desde snapshot." : "Esperando jugadores...");
     fflush(stdout);
 
     /*

@@ -29,7 +29,10 @@ void *heartbeat_sender(void *arg) {
         if (!alive || bfd < 0) continue;
 
         ReplMsg msg = { .msg_type = REPL_HEARTBEAT, .hb = hb };
-        if (send(bfd, &msg, sizeof(ReplMsg), MSG_NOSIGNAL) <= 0) {
+        pthread_mutex_lock(&repl_send_mutex);
+        int rc = send(bfd, &msg, sizeof(ReplMsg), MSG_NOSIGNAL);
+        pthread_mutex_unlock(&repl_send_mutex);
+        if (rc <= 0) {
             pthread_mutex_lock(&pb_mutex);
             pb_node.backup_alive = false;
             pthread_mutex_unlock(&pb_mutex);

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <pthread.h>
+#include "game_state.h"
 
 #define REPL_PORT        9191
 #define MAX_LOG_ENTRIES  4096
@@ -15,6 +16,7 @@
 #define REPL_LOG_ENTRY   1u
 #define REPL_HEARTBEAT   2u
 #define REPL_ACK         3u
+#define REPL_SNAPSHOT    4u
 
 typedef struct {
     uint32_t lamport_ts;
@@ -51,13 +53,18 @@ typedef struct {
     uint32_t lamport_clock;
     char     peer_host[64];
     char     log_file[128];
+    /* Snapshot del estado de juego recibido del Primary */
+    bool      has_snapshot;
+    GameState snapshot;
 } PBNode;
 
 extern PBNode           pb_node;
 extern pthread_mutex_t  pb_mutex;
+extern pthread_mutex_t  repl_send_mutex; /* serializa sends a backup_fd */
 
-/* Implementado en server_main.c — señala al hilo main que hay failover */
+/* Implementado en server_main.c */
 extern void trigger_failover(void);
+extern void restart_game_logic(void);
 
 void  pb_node_init(NodeRole role, const char *peer_host);
 void  append_log_entry(const char *action_json);

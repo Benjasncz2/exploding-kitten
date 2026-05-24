@@ -9,9 +9,11 @@
 #include <pthread.h>
 #include "pb_node.h"
 #include "protocol.h"
+#include "game_state.h"
 
 PBNode          pb_node;
-pthread_mutex_t pb_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t pb_mutex        = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t repl_send_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static volatile bool failover_done = false;
 
@@ -73,11 +75,13 @@ void replicate_to_backup(LogEntry *entry) {
 
     ReplMsg msg = { .msg_type = REPL_LOG_ENTRY, .entry = *entry };
 
-    /* Timeout de 500ms para recibir ACK */
+    pthread_mutex_lock(&repl_send_mutex);
+
     struct timeval tv = {0, 500000};
     setsockopt(bfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     if (send(bfd, &msg, sizeof(ReplMsg), MSG_NOSIGNAL) <= 0) {
+        pthread_mutex_unlock(&repl_send_mutex);
         pthread_mutex_lock(&pb_mutex);
         pb_node.backup_alive = false;
         pthread_mutex_unlock(&pb_mutex);
@@ -87,6 +91,8 @@ void replicate_to_backup(LogEntry *entry) {
 
     ReplMsg ack;
     ssize_t n = recv(bfd, &ack, sizeof(ReplMsg), MSG_WAITALL);
+    pthread_mutex_unlock(&repl_send_mutex);
+
     if (n <= 0 || ack.msg_type != REPL_ACK) {
         pthread_mutex_lock(&pb_mutex);
         pb_node.backup_alive = false;
@@ -142,6 +148,18 @@ void *backup_replication_thread(void *arg) {
             printf("[backup] HB OK — Primary log=%u | Backup log=%u\n",
                    msg.hb.log_index, my_log);
             fflush(stdout);
+
+        } else if (msg.msg_type == REPL_SNAPSHOT) {
+            GameState snap;
+            ssize_t sn = recv(fd, &snap, sizeof(GameState), MSG_WAITALL);
+            if (sn == (ssize_t)sizeof(GameState)) {
+                pthread_mutex_lock(&pb_mutex);
+                pb_node.snapshot     = snap;
+                pb_node.has_snapshot = true;
+                pthread_mutex_unlock(&pb_mutex);
+                printf("[backup] Snapshot recibido (%zu bytes).\n", sizeof(GameState));
+                fflush(stdout);
+            }
         }
     }
     return NULL;
@@ -157,6 +175,30 @@ void handle_primary_failure(void) {
     printf("[backup] Lamport local: %u | Entradas de log: %d\n",
            pb_node.lamport_clock, pb_node.log_size);
     fflush(stdout);
+
+    pthread_mutex_lock(&pb_mutex);
+    bool      has_snap = pb_node.has_snapshot;
+    GameState snap     = pb_node.snapshot;    /* copia local */
+    pthread_mutex_unlock(&pb_mutex);
+
+    if (has_snap) {
+        /* Escribir snapshot en disco para que el nuevo game_logic lo lea */
+        int sfd = open("/tmp/ek_snapshot.bin", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (sfd >= 0) {
+            ssize_t _w = write(sfd, &snap, sizeof(GameState));
+            (void)_w;
+            fsync(sfd);
+            close(sfd);
+            printf("[backup] Snapshot escrito en /tmp/ek_snapshot.bin (%zu bytes)\n",
+                   sizeof(GameState));
+            fflush(stdout);
+        }
+        /* Reiniciar game_logic para que lea el snapshot */
+        restart_game_logic();
+    } else {
+        printf("[backup] Sin snapshot — game_logic inicia partida nueva.\n");
+        fflush(stdout);
+    }
 
     pb_node.role = ROLE_PRIMARY;
     trigger_failover();   /* señala al hilo main para iniciar accept loop */

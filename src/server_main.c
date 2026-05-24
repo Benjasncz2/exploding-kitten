@@ -18,7 +18,8 @@
 #include "pb_node.h"
 #include "heartbeat.h"
 
-void game_logic_loop(void);  /* game_logic.c */
+void game_logic_loop(void);                /* game_logic.c */
+void game_logic_set_snapshot_fd(int fd);   /* game_logic.c */
 
 /* ─── Tabla de clientes compartida ─────────────────────────────── */
 static ClientSlot      clients[MAX_PLAYERS];
@@ -26,6 +27,11 @@ static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int             next_player_id = 0;
 static int             fifo_in_fd  = -1;
 static int             fifo_out_fd = -1;
+
+/* ─── Snapshot pipe (Primary → Backup) ─────────────────────────── */
+static int          snapshot_pipe[2]  = {-1, -1};
+static pid_t        game_logic_pid    = -1;
+static volatile int snapshot_read_fd  = -1;
 
 /* ─── Señal de failover (Backup → main thread) ──────────────────── */
 static volatile bool   failover_triggered = false;
@@ -38,6 +44,90 @@ void trigger_failover(void) {
     failover_triggered = true;
     pthread_cond_signal(&failover_cond);
     pthread_mutex_unlock(&failover_mutex);
+}
+
+/* Envía el snapshot actual al Backup via el canal de replicación TCP */
+static void send_snapshot_to_backup(const GameState *snap) {
+    pthread_mutex_lock(&pb_mutex);
+    bool alive = pb_node.backup_alive;
+    int  bfd   = pb_node.backup_fd;
+    pthread_mutex_unlock(&pb_mutex);
+    if (!alive || bfd < 0) return;
+
+    ReplMsg hdr = { .msg_type = REPL_SNAPSHOT };
+
+    pthread_mutex_lock(&repl_send_mutex);
+    if (send(bfd, &hdr, sizeof(ReplMsg), MSG_NOSIGNAL) <= 0) {
+        pthread_mutex_unlock(&repl_send_mutex);
+        pthread_mutex_lock(&pb_mutex);
+        pb_node.backup_alive = false;
+        pthread_mutex_unlock(&pb_mutex);
+        fprintf(stderr, "[primary] Backup caído al enviar snapshot.\n");
+        return;
+    }
+    if (send(bfd, snap, sizeof(GameState), MSG_NOSIGNAL) <= 0) {
+        pthread_mutex_unlock(&repl_send_mutex);
+        pthread_mutex_lock(&pb_mutex);
+        pb_node.backup_alive = false;
+        pthread_mutex_unlock(&pb_mutex);
+        fprintf(stderr, "[primary] Backup caído al enviar datos del snapshot.\n");
+        return;
+    }
+    pthread_mutex_unlock(&repl_send_mutex);
+}
+
+/* Mata el game_logic actual, crea nuevo pipe, forkea game_logic de nuevo */
+void restart_game_logic(void) {
+    if (game_logic_pid > 0) {
+        kill(game_logic_pid, SIGKILL);
+        waitpid(game_logic_pid, NULL, WNOHANG);
+        game_logic_pid = -1;
+    }
+
+    int old_snap_fd = snapshot_read_fd;
+    snapshot_read_fd = -1;
+    if (old_snap_fd >= 0) close(old_snap_fd);
+
+    int new_pipe[2];
+    if (pipe(new_pipe) < 0) { perror("pipe restart"); return; }
+    game_logic_set_snapshot_fd(new_pipe[1]);
+
+    pid_t child = fork();
+    if (child < 0) {
+        perror("fork restart");
+        close(new_pipe[0]);
+        close(new_pipe[1]);
+        return;
+    }
+    if (child == 0) {
+        close(new_pipe[0]);
+        game_logic_loop();
+        _exit(0);
+    }
+    close(new_pipe[1]);
+    game_logic_pid   = child;
+    snapshot_read_fd = new_pipe[0];
+
+    printf("[server] game_logic reiniciado (pid=%d)\n", (int)child);
+    fflush(stdout);
+}
+
+/* Hilo que lee snapshots del game_logic y los reenvía al Backup */
+static void *snapshot_thread(void *arg) {
+    (void)arg;
+    while (1) {
+        int snap_fd = snapshot_read_fd;
+        if (snap_fd < 0) { nanosleep(&(struct timespec){0, 50000000L}, NULL); continue; }
+
+        GameState snap;
+        ssize_t n = read(snap_fd, &snap, sizeof(GameState));
+        if (n == (ssize_t)sizeof(GameState)) {
+            send_snapshot_to_backup(&snap);
+        } else if (n <= 0) {
+            nanosleep(&(struct timespec){0, 50000000L}, NULL);
+        }
+    }
+    return NULL;
 }
 
 /* ─── Helpers de tabla de clientes ─────────────────────────────── */
@@ -361,14 +451,33 @@ static void init_fifos_and_game_logic(void) {
         perror("mkfifo"); exit(1);
     }
 
+    /* Pipe para recibir snapshots del game_logic */
+    if (pipe(snapshot_pipe) < 0) { perror("pipe"); exit(1); }
+    game_logic_set_snapshot_fd(snapshot_pipe[1]);
+
     pid_t child = fork();
     if (child < 0) { perror("fork"); exit(1); }
-    if (child == 0) { game_logic_loop(); _exit(0); }
+    if (child == 0) {
+        close(snapshot_pipe[0]);   /* el hijo no lee del pipe */
+        game_logic_loop();
+        _exit(0);
+    }
+    game_logic_pid = child;
+    close(snapshot_pipe[1]);       /* el padre no escribe en el pipe */
+    snapshot_read_fd = snapshot_pipe[0];
 
-    /* Abrir ambos extremos — el orden hace que no haya deadlock */
-    fifo_in_fd  = open(FIFO_NET_TO_GAME, O_WRONLY);
-    fifo_out_fd = open(FIFO_GAME_TO_NET,  O_RDONLY);
+    /*
+     * Abrir FIFOs O_RDWR para que no se cierren cuando game_logic muere.
+     * Con O_RDWR el padre mantiene abierto el extremo contrario, previniendo
+     * EOF en el hilo broadcast cuando el hijo termina (necesario para restart).
+     */
+    fifo_in_fd  = open(FIFO_NET_TO_GAME, O_RDWR);
+    fifo_out_fd = open(FIFO_GAME_TO_NET,  O_RDWR);
     if (fifo_in_fd < 0 || fifo_out_fd < 0) { perror("open FIFOs"); exit(1); }
+
+    pthread_t snap_tid;
+    pthread_create(&snap_tid, NULL, snapshot_thread, NULL);
+    pthread_detach(snap_tid);
 
     pthread_t bcast_tid;
     pthread_create(&bcast_tid, NULL, broadcast_thread, NULL);
