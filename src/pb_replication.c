@@ -201,5 +201,15 @@ void handle_primary_failure(void) {
     }
 
     pb_node.role = ROLE_PRIMARY;
+
+    /* Reasignar Elastic IP antes de aceptar clientes */
+    const char *eip_script = getenv("EK_REASSIGN_SCRIPT");
+    if (!eip_script) eip_script = "./scripts/reassign_eip.sh";
+    printf("[backup] Ejecutando: %s\n", eip_script);
+    fflush(stdout);
+    int eip_rc = system(eip_script);
+    if (eip_rc != 0)
+        fprintf(stderr, "[backup] WARN: EIP no reasignada (rc=%d) — continuando\n", eip_rc);
+
     trigger_failover();   /* señala al hilo main para iniciar accept loop */
 }

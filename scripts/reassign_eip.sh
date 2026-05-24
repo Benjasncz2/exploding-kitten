@@ -18,8 +18,11 @@ if [[ -z "$EIP_ALLOC" ]]; then
     exit 1
 fi
 
-# Obtener el Instance ID de la instancia actual (metadata de EC2)
-INSTANCE_ID=$(curl -sf http://169.254.169.254/latest/meta-data/instance-id)
+# Obtener el Instance ID via IMDSv2
+TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/instance-id)
 if [[ -z "$INSTANCE_ID" ]]; then
     echo "[reassign_eip] ERROR: No se pudo obtener el Instance ID." >&2
     exit 1
