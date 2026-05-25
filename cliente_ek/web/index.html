@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exploding Kittens</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- ── Header ──────────────────────────────────────────────── -->
+    <header id="header">
+        <div id="game-info">
+            <span id="phase-badge">LOBBY</span>
+            <span id="deck-info" title="Cartas en el mazo">🃏 —</span>
+            <span id="alive-info" title="Jugadores vivos">❤️ —</span>
+            <span id="lamport-info" title="Lamport clock">⏱ 0</span>
+        </div>
+    </header>
+
+    <!-- ── Main ────────────────────────────────────────────────── -->
+    <main id="game-area">
+
+        <!-- Círculo de jugadores + logo central -->
+        <div id="table-container">
+            <div id="table">
+                <div id="deck-card">
+                    <img id="center-logo" src="logo_Exploding_kittens.png" alt="Exploding Kittens">
+                </div>
+                <div id="deck-count">—</div>
+                <div id="deck-label">cartas</div>
+            </div>
+            <div id="players-circle"></div>
+        </div>
+
+        <!-- Panel de eventos -->
+        <aside id="event-panel">
+            <div id="event-panel-title">Eventos</div>
+            <div id="last-event">Esperando conexión...</div>
+            <div id="event-log"></div>
+        </aside>
+
+    </main>
+
+    <!-- ── Indicador de turno ───────────────────────────────────── -->
+    <div id="turn-indicator" class="hidden"></div>
+
+    <!-- ── Boton robar (encima de la mano) ──────────────────────── -->
+    <div id="draw-bar" style="display:none">
+        <button id="btn-draw" onclick="sendAction('DRAW')" class="btn-blue">Robar carta</button>
+    </div>
+
+    <!-- ── Mano ─────────────────────────────────────────────────── -->
+    <section id="hand-area">
+        <div id="hand-label">Tu mano <span id="hand-count"></span></div>
+        <div id="hand-cards"></div>
+    </section>
+
+    <!-- ── Controles ─────────────────────────────────────────────── -->
+    <footer id="controls">
+        <button id="btn-start"     onclick="sendAction('START')"  class="btn-green">Iniciar partida</button>
+        <button id="btn-nope"      onclick="sendAction('NOPE')"   class="btn-red"   style="display:none">Nope!</button>
+        <button id="btn-play"      onclick="playSelected()"       class="btn-blue"  style="display:none">Jugar carta</button>
+        <button id="btn-play-pair" onclick="openPairSelector()"   class="btn-pair"  style="display:none">Jugar par</button>
+        <div id="play-hint" style="display:none">
+            Clic para seleccionar · doble clic para jugar
+        </div>
+        <div id="status-bar"></div>
+    </footer>
+
+    <!-- ── Overlay: Defuse ───────────────────────────────────────── -->
+    <div id="defuse-overlay" style="display:none">
+        <div id="defuse-box">
+            <img id="defuse-img" src="defuse.png" alt="Defuse">
+            <h2>¡Usas tu DEFUSE!</h2>
+            <p>¿En qué posición reinsertas el Exploding Kitten?<br>
+               <small>(0 = fondo del mazo &nbsp;·&nbsp; máximo = tope)</small></p>
+            <input type="number" id="defuse-pos" min="0" value="0">
+            <button onclick="sendDefuse()" class="btn-green">Confirmar</button>
+        </div>
+    </div>
+
+    <!-- ── Overlay: See Future ──────────────────────────────────── -->
+    <div id="peek-overlay" style="display:none" onclick="closePeek()">
+        <div id="peek-cards"></div>
+        <div id="peek-hint">Haz clic para cerrar</div>
+    </div>
+
+    <!-- ── Overlay: Seleccionar objetivo (par) ───────────────────── -->
+    <div id="pair-overlay" style="display:none">
+        <div id="pair-box">
+            <div id="pair-title">Selecciona a quien robarle</div>
+            <div id="pair-targets"></div>
+            <button onclick="closePair()" class="btn-cancel">Cancelar</button>
+        </div>
+    </div>
+
+    <!-- ── Overlay: Game Over ───────────────────────────────────── -->
+    <div id="gameover-overlay" style="display:none">
+        <div id="gameover-box">
+            <div id="gameover-emoji">🏆</div>
+            <h2 id="gameover-text">¡Fin del juego!</h2>
+            <p id="gameover-sub"></p>
+        </div>
+    </div>
+
+    <!-- ── Música ───────────────────────────────────────────────── -->
+    <audio id="bg-music" loop>
+        <source src="../YTDown_YouTube_Kat-Fight-Mewgenics-Official-Lyric-Video_Media_YxXiMTwanZ0_009_128k.mp3" type="audio/mpeg">
+    </audio>
+    <button id="music-btn" onclick="toggleMusic()" title="Música">🔇</button>
+
+    <script src="game.js"></script>
+</body>
+</html>
